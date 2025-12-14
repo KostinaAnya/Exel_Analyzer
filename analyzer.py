@@ -5,72 +5,241 @@ def clean_columns(df):
     df.columns = df.columns.str.strip().str.lower()
     return df
 
-def analyze_files(file_orders, file_revenue, file_costs):
+import pandas as pd
+import warnings
+from typing import Dict, Optional
+
+# Отключаем предупреждения openpyxl о стилях
+warnings.filterwarnings('ignore', category=UserWarning, module='openpyxl')
+
+def clean_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Очищает названия столбцов, оптимизированно."""
+    df.columns = df.columns.str.strip().str.lower()
+    return df
+
+def read_excel_with_memory_optimization(
+    file_path: str, 
+    required_cols: list, 
+    header: Optional[int] = None,
+    dtype_spec: Optional[Dict] = None
+) -> pd.DataFrame:
     """
-    Анализирует три файла Excel и возвращает отчетный DataFrame
+    Читает Excel файл с оптимизацией памяти.
+    
+    Args:
+        file_path: путь к файлу
+        required_cols: список обязательных столбцов
+        header: строка заголовка (None или число)
+        dtype_spec: словарь с типами данных для столбцов
+    
+    Returns:
+        Оптимизированный DataFrame
     """
-    # Загрузка файла заказов
-    orders_df = pd.read_excel(file_orders, engine='openpyxl', index_col=None)
-    orders_df = clean_columns(orders_df)
+    # Устанавливаем умолчательные типы данных для оптимизации
+    default_dtype = {
+        'артикул': 'str',
+        'статус': 'category',      # Экономит ~70% памяти для повторяющихся значений
+        'сумма итого, руб.': 'float32',
+        'закупочная цена': 'float32'
+    }
+    
+    if dtype_spec:
+        default_dtype.update(dtype_spec)
+    
+    # Фильтруем только нужные типы для фактически присутствующих столбцов
+    use_cols = [col for col in required_cols if col in default_dtype]
+    final_dtype = {col: default_dtype[col] for col in use_cols if col in default_dtype}
+    
+    try:
+        df = pd.read_excel(
+            file_path,
+            engine='openpyxl',
+            header=header,
+            usecols=required_cols,      # Читаем ТОЛЬКО нужные столбцы
+            dtype=final_dtype,          # Указываем типы данных для экономии памяти
+            memory_map=True             # Используем memory mapping для больших файлов
+        )
+    except ValueError as e:
+        # Если какие-то столбцы отсутствуют, пытаемся прочитать все, потом отфильтровать
+        df = pd.read_excel(
+            file_path,
+            engine='openpyxl',
+            header=header,
+            dtype={'артикул': 'str'}  # Хотя бы основной столбец оптимизируем
+        )
+        df = clean_columns(df)
+        
+        # Проверяем наличие обязательных столбцов
+        missing_cols = [col for col in required_cols if col not in df.columns]
+        if missing_cols:
+            raise KeyError(f"В файле отсутствуют столбцы: {missing_cols}")
+        
+        # Оставляем только нужные столбцы
+        df = df[required_cols].astype(final_dtype, errors='ignore')
+    
+    df = clean_columns(df)
+    return df
 
-    required_orders = ['артикул', 'статус']
-    for col in required_orders:
-        if col not in orders_df.columns:
-            raise KeyError(f"В файле заказов отсутствует столбец '{col}'")
-
-    delivered = orders_df[orders_df['статус'] == 'Доставлен'].groupby('артикул').size()
-    cancelled = orders_df[orders_df['статус'] == 'Отменён'].groupby('артикул').size()
-
-    all_articles = orders_df['артикул'].unique()
-    delivered = delivered.reindex(all_articles, fill_value=0)
-    cancelled = cancelled.reindex(all_articles, fill_value=0)
-
-    # Загрузка файла выручки
-    revenue_df = pd.read_excel(file_revenue, engine='openpyxl', index_col=None, header=1)
-    revenue_df = clean_columns(revenue_df)
-
-    required_revenue = ['артикул', 'сумма итого, руб.']
-    for col in required_revenue:
-        if col not in revenue_df.columns:
-            raise KeyError(f"В файле выручки отсутствует столбец '{col}'")
-    revenue_sum = revenue_df.groupby('артикул')['сумма итого, руб.'].sum()
-
-    # Загрузка файла с закупочными ценами
-    cost_df = pd.read_excel(file_costs, engine='openpyxl', index_col=None)
-    cost_df = clean_columns(cost_df)
-                              
-    required_costs = ['артикул', 'закупочная цена']
-    for col in required_costs:
-        if col not in cost_df.columns:
-            raise KeyError(f"В файле с закупочными ценами отсутствует столбец '{col}'")
-
-    # Берём закупочную цену по артикулу (если несколько строк для артикула - берем среднее или первую цену)
-    cost_avg = cost_df.groupby('артикул')['закупочная цена'].mean()
-
-    # Формируем итоговый датафрейм
+def analyze_files(file_orders: str, file_revenue: str, file_costs: str) -> pd.DataFrame:
+    """
+    Анализирует три файла Excel с оптимизацией памяти.
+    Возвращает отчетный DataFrame.
+    
+    Args:
+        file_orders: путь к файлу заказов
+        file_revenue: путь к файлу выручки  
+        file_costs: путь к файлу закупочных цен
+    
+    Returns:
+        Итоговый отчет DataFrame
+    """
+    print(f"[DEBUG] Начинаем анализ с оптимизацией памяти...")
+    
+    # ============ 1. ОБРАБОТКА ФАЙЛА ЗАКАЗОВ ============
+    print(f"[DEBUG] Чтение файла заказов: {file_orders}")
+    orders_df = read_excel_with_memory_optimization(
+        file_path=file_orders,
+        required_cols=['артикул', 'статус'],
+        dtype_spec={'артикул': 'str', 'статус': 'category'}
+    )
+    
+    # Проверяем наличие обязательных столбцов
+    if 'артикул' not in orders_df.columns or 'статус' not in orders_df.columns:
+        raise KeyError("В файле заказов отсутствуют обязательные столбцы 'артикул' или 'статус'")
+    
+    # Считаем доставленные и отмененные заказы
+    delivered_mask = orders_df['статус'] == 'Доставлен'
+    cancelled_mask = orders_df['статус'] == 'Отменён'
+    
+    delivered = orders_df[delivered_mask].groupby('артикул').size()
+    cancelled = orders_df[cancelled_mask].groupby('артикул').size()
+    
+    # Получаем все уникальные артикулы
+    all_articles = pd.Index(orders_df['артикул'].unique(), name='артикул')
+    
+    # Освобождаем память от orders_df сразу после использования
+    del orders_df, delivered_mask, cancelled_mask
+    
+    # Реиндексируем с заполнением нулями для отсутствующих артикулов
+    delivered = delivered.reindex(all_articles, fill_value=0).astype('int32')
+    cancelled = cancelled.reindex(all_articles, fill_value=0).astype('int32')
+    
+    # ============ 2. ОБРАБОТКА ФАЙЛА ВЫРУЧКИ ============
+    print(f"[DEBUG] Чтение файла выручки: {file_revenue}")
+    revenue_df = read_excel_with_memory_optimization(
+        file_path=file_revenue,
+        required_cols=['артикул', 'сумма итого, руб.'],
+        header=1,  # Вторая строка как заголовок
+        dtype_spec={'артикул': 'str', 'сумма итого, руб.': 'float32'}
+    )
+    
+    # Группируем выручку по артикулам
+    revenue_sum = revenue_df.groupby('артикул')['сумма итого, руб.'].sum().astype('float32')
+    del revenue_df  # Освобождаем память
+    
+    # ============ 3. ОБРАБОТКА ФАЙЛА ЗАКУПОЧНЫХ ЦЕН ============
+    print(f"[DEBUG] Чтение файла закупочных цен: {file_costs}")
+    cost_df = read_excel_with_memory_optimization(
+        file_path=file_costs,
+        required_cols=['артикул', 'закупочная цена'],
+        dtype_spec={'артикул': 'str', 'закупочная цена': 'float32'}
+    )
+    
+    # Средняя закупочная цена по артикулу
+    cost_avg = cost_df.groupby('артикул')['закупочная цена'].mean().astype('float32')
+    del cost_df  # Освобождаем память
+    
+    # ============ 4. ФОРМИРОВАНИЕ ИТОГОВОГО ОТЧЕТА ============
+    print(f"[DEBUG] Формирование итогового отчета...")
+    
+    # Создаем базовый DataFrame с оптимизированными типами
     report_df = pd.DataFrame({
         'Продано заказов': delivered,
         'Отменено заказов': cancelled
-    })
-
-    # Добавляем выручку
+    }, index=all_articles)
+    
+    # Присоединяем выручку с заполнением нулями
     report_df = report_df.join(revenue_sum, how='left').fillna(0)
-
-    # Добавляем закупочную цену
+    
+    # Присоединяем закупочные цены
     report_df = report_df.join(cost_avg, how='left')
-
-    # Рассчитываем прибыль по формуле: прибыль = выручка - (кол-во доставленных заказов * закупочная цена)
-    report_df['Прибыль'] = report_df['сумма итого, руб.'] - (report_df['Продано заказов'] * report_df['закупочная цена'])
-
-    # Добавляем итоговую строку с суммами
+    report_df = report_df.rename(columns={'закупочная цена': 'закупочная цена за шт'})
+    
+    # Рассчитываем прибыль с оптимизацией
+    # Прибыль = выручка - (кол-во доставленных * закупочная цена)
+    delivered_series = report_df['Продано заказов']
+    cost_series = report_df['закупочная цена за шт'].fillna(0)
+    revenue_series = report_df['сумма итого, руб.']
+    
+    report_df['Прибыль'] = revenue_series - (delivered_series * cost_series)
+    report_df['Прибыль'] = report_df['Прибыль'].astype('float32')
+    
+    # ============ 5. ДОБАВЛЕНИЕ ИТОГОВОЙ СТРОКИ ============
+    print(f"[DEBUG] Добавление итоговой строки...")
+    
+    # Считаем итоги, избегая ненужных вычислений
+    total_delivered = delivered_series.sum()
+    total_cancelled = report_df['Отменено заказов'].sum()
+    total_revenue = revenue_series.sum()
+    total_profit = report_df['Прибыль'].sum()
+    
+    # Создаем итоговую строку
     total_row = pd.DataFrame({
-        'Продано заказов': [report_df['Продано заказов'].sum()],
-        'Отменено заказов': [report_df['Отменено заказов'].sum()],
-        'сумма итого, руб.': [report_df['сумма итого, руб.'].sum()],
-        'Прибыль': [report_df['Прибыль'].sum()]
+        'Продано заказов': [total_delivered],
+        'Отменено заказов': [total_cancelled],
+        'сумма итого, руб.': [total_revenue],
+        'закупочная цена за шт': [None],  # Для итогов не имеет смысла
+        'Прибыль': [total_profit]
     }, index=['Итого'])
     
-    report_df = report_df.rename(columns={'закупочная цена': 'закупочная цена за шт'})
+    # Объединяем с основным отчетом
     report_df = pd.concat([report_df, total_row])
-
+    
+    # Убедимся, что индексы имеют имя для читаемости
+    report_df.index.name = 'Артикул'
+    
+    print(f"[DEBUG] Анализ завершен успешно! Отчет содержит {len(report_df)-1} артикулов.")
+    
     return report_df
+
+# Дополнительная функция для быстрой проверки
+def quick_test():
+    """Быстрый тест работы функции."""
+    import os
+    print("Тест оптимизации памяти...")
+    
+    # Проверяем, что функция определена
+    assert callable(analyze_files), "Функция analyze_files не определена!"
+    
+    # Создаем тестовые данные
+    test_data = pd.DataFrame({
+        'артикул': ['A001', 'A002', 'A001', 'A003'],
+        'статус': ['Доставлен', 'Отменён', 'Доставлен', 'Доставлен']
+    })
+    
+    # Сохраняем временный файл
+    test_file = 'test_orders.xlsx'
+    test_data.to_excel(test_file, index=False)
+    
+    try:
+        # Тестируем чтение файла
+        df = read_excel_with_memory_optimization(
+            test_file,
+            ['артикул', 'статус']
+        )
+        print(f"✓ Тест чтения файла пройден. Прочитано {len(df)} строк.")
+        
+        # Проверяем оптимизацию типов
+        assert df['статус'].dtype.name == 'category', "Тип данных не оптимизирован!"
+        print("✓ Типы данных оптимизированы правильно.")
+        
+    finally:
+        # Удаляем временный файл
+        if os.path.exists(test_file):
+            os.remove(test_file)
+    
+    print("Все тесты пройдены успешно!")
+
+if __name__ == '__main__':
+    # Запуск теста при прямом выполнении файла
+    quick_test()
