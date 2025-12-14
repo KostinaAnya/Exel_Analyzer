@@ -38,9 +38,9 @@ def read_excel_with_memory_optimization(
     print(f"[DEBUG] Исходные столбцы: {list(df.columns)}")
     
     # Очищаем названия столбцов
-    df = clean_columns(df)
+    #df = clean_columns(df)
     
-    print(f"[DEBUG] Очищенные столбцы: {list(df.columns)}")
+    #print(f"[DEBUG] Очищенные столбцы: {list(df.columns)}")
     print(f"[DEBUG] Ищем столбцы: {required_cols}")
     
     # Проверяем наличие обязательных столбцов (в очищенном виде)
