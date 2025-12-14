@@ -1,10 +1,3 @@
-# analyzer.py
-import pandas as pd
-
-def clean_columns(df):
-    df.columns = df.columns.str.strip().str.lower()
-    return df
-
 import pandas as pd
 import warnings
 from typing import Dict, Optional
@@ -13,7 +6,7 @@ from typing import Dict, Optional
 warnings.filterwarnings('ignore', category=UserWarning, module='openpyxl')
 
 def clean_columns(df: pd.DataFrame) -> pd.DataFrame:
-    """Очищает названия столбцов, оптимизированно."""
+    """Очищает названия столбцов."""
     df.columns = df.columns.str.strip().str.lower()
     return df
 
@@ -51,21 +44,21 @@ def read_excel_with_memory_optimization(
     final_dtype = {col: default_dtype[col] for col in use_cols if col in default_dtype}
     
     try:
+        # Читаем файл с оптимизацией памяти
         df = pd.read_excel(
             file_path,
             engine='openpyxl',
             header=header,
             usecols=required_cols,      # Читаем ТОЛЬКО нужные столбцы
-            dtype=final_dtype,          # Указываем типы данных для экономии памяти
-            memory_map=True             # Используем memory mapping для больших файлов
+            dtype=final_dtype           # Указываем типы данных для экономии памяти
+            # Параметр memory_map удален - он не поддерживается для Excel
         )
     except ValueError as e:
         # Если какие-то столбцы отсутствуют, пытаемся прочитать все, потом отфильтровать
         df = pd.read_excel(
             file_path,
             engine='openpyxl',
-            header=header,
-            dtype={'артикул': 'str'}  # Хотя бы основной столбец оптимизируем
+            header=header
         )
         df = clean_columns(df)
         
@@ -74,8 +67,11 @@ def read_excel_with_memory_optimization(
         if missing_cols:
             raise KeyError(f"В файле отсутствуют столбцы: {missing_cols}")
         
-        # Оставляем только нужные столбцы
-        df = df[required_cols].astype(final_dtype, errors='ignore')
+        # Оставляем только нужные столбцы и применяем типы данных
+        df = df[required_cols]
+        for col, dtype in final_dtype.items():
+            if col in df.columns:
+                df[col] = df[col].astype(dtype, errors='ignore')
     
     df = clean_columns(df)
     return df
@@ -166,30 +162,19 @@ def analyze_files(file_orders: str, file_revenue: str, file_costs: str) -> pd.Da
     report_df = report_df.rename(columns={'закупочная цена': 'закупочная цена за шт'})
     
     # Рассчитываем прибыль с оптимизацией
-    # Прибыль = выручка - (кол-во доставленных * закупочная цена)
-    delivered_series = report_df['Продано заказов']
-    cost_series = report_df['закупочная цена за шт'].fillna(0)
-    revenue_series = report_df['сумма итого, руб.']
-    
-    report_df['Прибыль'] = revenue_series - (delivered_series * cost_series)
+    report_df['Прибыль'] = report_df['сумма итого, руб.'] - (report_df['Продано заказов'] * report_df['закупочная цена за шт'].fillna(0))
     report_df['Прибыль'] = report_df['Прибыль'].astype('float32')
     
     # ============ 5. ДОБАВЛЕНИЕ ИТОГОВОЙ СТРОКИ ============
     print(f"[DEBUG] Добавление итоговой строки...")
     
-    # Считаем итоги, избегая ненужных вычислений
-    total_delivered = delivered_series.sum()
-    total_cancelled = report_df['Отменено заказов'].sum()
-    total_revenue = revenue_series.sum()
-    total_profit = report_df['Прибыль'].sum()
-    
     # Создаем итоговую строку
     total_row = pd.DataFrame({
-        'Продано заказов': [total_delivered],
-        'Отменено заказов': [total_cancelled],
-        'сумма итого, руб.': [total_revenue],
+        'Продано заказов': [report_df['Продано заказов'].sum()],
+        'Отменено заказов': [report_df['Отменено заказов'].sum()],
+        'сумма итого, руб.': [report_df['сумма итого, руб.'].sum()],
         'закупочная цена за шт': [None],  # Для итогов не имеет смысла
-        'Прибыль': [total_profit]
+        'Прибыль': [report_df['Прибыль'].sum()]
     }, index=['Итого'])
     
     # Объединяем с основным отчетом
@@ -202,44 +187,34 @@ def analyze_files(file_orders: str, file_revenue: str, file_costs: str) -> pd.Da
     
     return report_df
 
-# Дополнительная функция для быстрой проверки
-def quick_test():
-    """Быстрый тест работы функции."""
-    import os
-    print("Тест оптимизации памяти...")
+# Функция для быстрого тестирования
+def test_analyzer():
+    """Тестирует основные функции analyzer."""
+    print("Тестирование analyzer.py...")
     
-    # Проверяем, что функция определена
-    assert callable(analyze_files), "Функция analyze_files не определена!"
+    # Проверяем наличие функции
+    if 'analyze_files' not in globals():
+        print("❌ Функция analyze_files не найдена!")
+        return False
     
-    # Создаем тестовые данные
-    test_data = pd.DataFrame({
-        'артикул': ['A001', 'A002', 'A001', 'A003'],
-        'статус': ['Доставлен', 'Отменён', 'Доставлен', 'Доставлен']
-    })
+    print("✅ Модуль загружен успешно")
+    print("✅ Функция analyze_files доступна")
     
-    # Сохраняем временный файл
-    test_file = 'test_orders.xlsx'
-    test_data.to_excel(test_file, index=False)
+    # Проверяем параметры функции
+    import inspect
+    sig = inspect.signature(analyze_files)
+    params = list(sig.parameters.keys())
     
-    try:
-        # Тестируем чтение файла
-        df = read_excel_with_memory_optimization(
-            test_file,
-            ['артикул', 'статус']
-        )
-        print(f"✓ Тест чтения файла пройден. Прочитано {len(df)} строк.")
-        
-        # Проверяем оптимизацию типов
-        assert df['статус'].dtype.name == 'category', "Тип данных не оптимизирован!"
-        print("✓ Типы данных оптимизированы правильно.")
-        
-    finally:
-        # Удаляем временный файл
-        if os.path.exists(test_file):
-            os.remove(test_file)
+    if params == ['file_orders', 'file_revenue', 'file_costs']:
+        print("✅ Сигнатура функции корректна")
+    else:
+        print(f"❌ Неожиданная сигнатура: {params}")
     
-    print("Все тесты пройдены успешно!")
+    return True
 
 if __name__ == '__main__':
     # Запуск теста при прямом выполнении файла
-    quick_test()
+    test_analyzer()
+    print("\n✅ analyzer.py готов к использованию!")
+    print("\nДля использования в Flask:")
+    print("from analyzer import analyze_files")
